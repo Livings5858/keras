@@ -24,10 +24,15 @@ input if the given shape is a tuple.
 import tensorflow.compat.v2 as tf
 
 import collections
+import functools
 import enum
 import json
 import numpy as np
 import wrapt
+
+from keras.utils import generic_utils
+
+# pylint: disable=g-direct-tensorflow-import
 from tensorflow.python.framework import type_spec
 
 
@@ -61,7 +66,18 @@ def decode(json_string):
   return json.loads(json_string, object_hook=_decode_helper)
 
 
-def _decode_helper(obj):
+def decode_and_deserialize(json_string, module_objects=None,
+                           custom_objects=None):
+  return json.loads(json_string,
+                    object_hook=functools.partial(
+                        _decode_helper,
+                        deserialize=True,
+                        module_objects=module_objects,
+                        custom_objects=custom_objects))
+
+
+def _decode_helper(obj, deserialize=False, module_objects=None,
+                   custom_objects=None):
   """A decoding helper that is TF-object aware."""
   if isinstance(obj, dict) and 'class_name' in obj:
     if obj['class_name'] == 'TensorShape':
@@ -73,6 +89,15 @@ def _decode_helper(obj):
       return tuple(_decode_helper(i) for i in obj['items'])
     elif obj['class_name'] == '__ellipsis__':
       return Ellipsis
+    elif deserialize and '__passive_serialization__' in obj:
+      try:
+        return generic_utils.deserialize_keras_object(
+            obj,
+            module_objects=module_objects,
+            custom_objects=custom_objects,
+            printable_module_name='config_item')
+      except ValueError:
+        pass
   return obj
 
 
@@ -91,7 +116,9 @@ def get_json_type(obj):
   # if obj is a serializable Keras class instance
   # e.g. optimizer, layer
   if hasattr(obj, 'get_config'):
-    return {'class_name': obj.__class__.__name__, 'config': obj.get_config()}
+    serialized = generic_utils.serialize_keras_object(obj)
+    serialized['__passive_serialization__'] = True
+    return serialized
 
   # if obj is any numpy type
   if type(obj).__module__ == np.__name__:
